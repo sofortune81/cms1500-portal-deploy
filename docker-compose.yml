@@ -1,0 +1,21 @@
+# Customer host. One container, one volume. The reverse proxy (Caddyfile beside this file)
+# terminates TLS on the same host and is the only thing that reaches port 8000.
+services:
+  portal:
+    image: ${PORTAL_IMAGE}:${PORTAL_VERSION}
+    container_name: cms1500-portal
+    restart: unless-stopped
+    env_file: portal.env
+    environment:
+      - LICENSE_PATH=/data/portal.lic
+      - PROCESSED_CLAIMS_DIR=/data/processed_claims
+      - PENDING_CLAIMS_DIR=/data/pending_claims
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

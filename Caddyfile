@@ -1,0 +1,14 @@
+portal.example.internal {
+    tls internal            # or a real cert via DNS challenge; never plain http
+    encode gzip
+    @blocked not remote_ip 10.0.0.0/8 100.64.0.0/10   # LAN + VPN ranges; edit to the pilot's
+    respond @blocked 403
+    reverse_proxy 127.0.0.1:8000 {
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+    log {
+        output file /var/log/caddy/portal-access.log
+        format json
+    }
+}
