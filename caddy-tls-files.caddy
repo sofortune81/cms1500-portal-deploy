@@ -1,0 +1,1 @@
+tls /certs/fullchain.pem /certs/privkey.pem

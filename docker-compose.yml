@@ -1,5 +1,5 @@
-# Customer host. One container, one volume. The reverse proxy (Caddyfile beside this file)
-# terminates TLS on the same host and is the only thing that reaches port 8000.
+# Customer host. The portal, plus (profile `tls`, switched on by COMPOSE_PROFILES in portal.env)
+# a Caddy reverse proxy that terminates TLS and is the only thing reachable from the network.
 services:
   portal:
     image: ${PORTAL_IMAGE}:${PORTAL_VERSION}
@@ -14,8 +14,47 @@ services:
       - "127.0.0.1:8000:8000"
     volumes:
       - ./data:/data
+    networks:
+      - portal_net
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
       interval: 30s
       timeout: 5s
       retries: 3
+
+  proxy:
+    profiles: ["tls"]
+    image: ${PROXY_IMAGE}:${PROXY_VERSION}
+    container_name: cms1500-proxy
+    restart: unless-stopped
+    # No env_file here: portal.env holds the AWS secret, PORTAL_SECRET_KEY and the Entra ids,
+    # and this container faces the network. The Caddyfile reads only these three (`{$VAR}`
+    # placeholders), interpolated from the --env-file portal.env every script passes.
+    environment:
+      - PORTAL_HOSTNAME=${PORTAL_HOSTNAME}
+      - PORTAL_TLS_MODE=${PORTAL_TLS_MODE}
+      - PORTAL_ALLOWED_RANGES=${PORTAL_ALLOWED_RANGES}
+    depends_on:
+      portal:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./caddy-tls-internal.caddy:/etc/caddy/tls-internal.caddy:ro
+      - ./caddy-tls-public.caddy:/etc/caddy/tls-public.caddy:ro
+      - ./caddy-tls-files.caddy:/etc/caddy/tls-files.caddy:ro
+      - ./certs:/certs:ro
+      - ./caddy-data:/data
+      - ./caddy-config:/config
+    networks:
+      portal_net:
+        # Fixed: the portal trusts X-Forwarded-* from this one address (FORWARDED_ALLOW_IPS).
+        ipv4_address: ${PROXY_IP}
+
+networks:
+  portal_net:
+    ipam:
+      config:
+        - subnet: ${PROXY_SUBNET}
