@@ -19,11 +19,11 @@
 }
 
 {$PORTAL_HOSTNAME} {
-    import /etc/caddy/tls-{$PORTAL_TLS_MODE}.caddy
+    import {$CADDY_TLS_DIR:/etc/caddy}/tls-{$PORTAL_TLS_MODE}.caddy
     encode gzip
     @blocked not remote_ip {$PORTAL_ALLOWED_RANGES}
     respond @blocked 403
-    reverse_proxy portal:8000 {
+    reverse_proxy {$PORTAL_UPSTREAM:portal:8000} {
         header_up X-Forwarded-For {remote_host}
         header_up X-Forwarded-Proto {scheme}
     }

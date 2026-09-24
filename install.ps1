@@ -287,32 +287,18 @@ if ($authMode -eq 'entra') {
 }
 
 # -T: neither subcommand prompts, so no tty is needed.
+# --no-activation in entra mode: sign-in is Microsoft and auth.py refuses passwords for every
+# id but break-glass, so the token `create` would otherwise mint is a live credential nobody
+# can ever use. Not minting it replaces the old capture-and-filter of the command's stdout.
 if ($authMode -eq 'entra') {
-  # `create` always mints an activation token and prints it as its last two lines. In entra
-  # mode it can never be used -- auth.py refuses passwords for every id but break-glass -- so
-  # showing it puts a live credential on screen that nobody will ever type. Only stdout is
-  # captured (never a stderr redirect, which can raise NativeCommandError under 'Stop' in
-  # 5.1), so a real error still reaches the console, and the capture is shown in full if the
-  # command fails.
-  $adminOut = @(Invoke-Compose exec -T portal python -m dev_tools.portal_user_admin --db $adminDb create $adminId $adminName --role admin)
-  if ($LASTEXITCODE -ne 0) {
-    foreach ($line in $adminOut) { [Console]::Error.WriteLine($line) }
-    [Console]::Error.WriteLine("creating the administrator failed (exit $LASTEXITCODE).")
-    Write-AdminRetryHint
-    exit $LASTEXITCODE
-  }
-  $cut = $adminOut.Count
-  for ($i = 0; $i -lt $adminOut.Count; $i++) {
-    if ($adminOut[$i] -like 'activation token for *') { $cut = $i; break }
-  }
-  for ($i = 0; $i -lt $cut; $i++) { Write-Host $adminOut[$i] }
+  Invoke-Compose exec -T portal python -m dev_tools.portal_user_admin --db $adminDb create $adminId $adminName --role admin --no-activation
 } else {
   Invoke-Compose exec -T portal python -m dev_tools.portal_user_admin --db $adminDb create $adminId $adminName --role admin
-  if ($LASTEXITCODE -ne 0) {
-    [Console]::Error.WriteLine("creating the administrator failed (exit $LASTEXITCODE).")
-    Write-AdminRetryHint
-    exit $LASTEXITCODE
-  }
+}
+if ($LASTEXITCODE -ne 0) {
+  [Console]::Error.WriteLine("creating the administrator failed (exit $LASTEXITCODE).")
+  Write-AdminRetryHint
+  exit $LASTEXITCODE
 }
 
 if ($authMode -eq 'entra') {

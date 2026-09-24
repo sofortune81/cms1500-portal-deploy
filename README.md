@@ -15,19 +15,195 @@
   it out of the portal image rather than downloading anything. It goes in your own
   `~/.docker/cli-plugins/`, so it affects nothing else on the host, and an air-gapped `.tar`
   install works the same way.
-- **Windows:** Docker Desktop, set to Linux containers, and Windows PowerShell 5.1 (the
-  "Windows PowerShell" that ships with Windows). Docker Desktop already includes Compose.
-  Our scripts are not code-signed, so if PowerShell refuses to run `install.ps1`, start it
-  like this instead — this allows the one script, and changes nothing on the machine:
+- **Linux host** (Docker Engine 24+) **or native Windows service** (Windows Server 2022 or
+  Windows 11, physical or virtual, Windows PowerShell 5.1 — no Docker, WSL or Hyper-V needed).
+  See **Windows native install** below for the native path.
+- **Docker Desktop on Windows Server is unsupported.** Docker Desktop on Windows 11 remains
+  supported through `install.ps1` in this bundle: set it to Linux containers. Our scripts are
+  not code-signed, so if PowerShell refuses to run one, start it like this instead — this
+  allows the one script, and changes nothing on the machine:
 
       powershell -ExecutionPolicy Bypass -File .\install.ps1 -Version <version>
 
+- **A Windows VM running Docker needs nested virtualization** on its hypervisor; without it
+  Docker's Linux engine never starts (`docker login` answers `500 Internal Server Error` on
+  `dockerDesktopLinuxEngine`). Use the native Windows service instead.
+- **Native Windows:** the `data` folder on a BitLocker volume; endpoint-protection exclusions
+  as printed by the preflight.
 - The `data/` folder on an encrypted volume. It will hold patient data.
 - Outbound HTTPS to AWS (Textract, Bedrock) and, unless your policy forbids it, to the licence server.
 - Ports 80 and 443 free on the host — the installer-managed HTTPS proxy publishes them, so
   nothing else on the host may hold them. Port 8000 is never exposed. For a `public`
   certificate you also need a public DNS name pointing at the host.
 - Your reviewers reach the portal over the LAN or VPN at `https://<hostname>`.
+
+## Before you install: AWS and Microsoft sign-in
+
+The installer asks for AWS keys and, if you choose Microsoft sign-in, for values from an Azure
+app registration. Both live in **your** accounts, not ours. Set them up first using the steps
+below. If you would rather start without them, press Enter at the AWS prompts, choose `local`
+sign-in, and come back to this section later.
+
+### AWS
+
+The portal reads each claim with Amazon Textract. The optional vision second pass uses Amazon
+Bedrock. Both run in your AWS account and bill to it. You need an AWS account and someone who
+can create IAM users in it.
+
+1. **Accept the AWS Business Associate Addendum.** Claim images are patient data. Sign in to
+   the AWS console as the account's root user or an administrator, open **AWS Artifact** →
+   **Agreements**, and accept the **AWS Business Associate Addendum** for this account (or for
+   your organisation, if you use AWS Organizations). Do this before any real claim is processed.
+2. **Choose a region.** Pick one region and use it everywhere below. It must:
+   - be on AWS's list of HIPAA-eligible services for Textract, and for Bedrock if you will use
+     the vision pass;
+   - offer the vision model `qwen.qwen3-vl-235b-a22b`, if you will use the vision pass. To
+     check, open the Bedrock console in that region → **Model catalog** and search for "Qwen3
+     VL".
+
+   Write the region code down in lower case, for example `us-east-1`. The installer asks for
+   it.
+3. **Create the permissions policy.** Open **IAM** → **Policies** → **Create policy** →
+   **JSON**. Paste the policy below. Replace `us-east-1` in the Bedrock ARN with your region.
+   Choose **Next**, name the policy `cms1500-portal`, and choose **Create policy**.
+
+       {
+         "Version": "2012-10-17",
+         "Statement": [
+           {
+             "Sid": "ClaimTextExtraction",
+             "Effect": "Allow",
+             "Action": [
+               "textract:DetectDocumentText",
+               "textract:AnalyzeDocument"
+             ],
+             "Resource": "*"
+           },
+           {
+             "Sid": "ClaimVisionSecondPass",
+             "Effect": "Allow",
+             "Action": [
+               "bedrock:InvokeModel"
+             ],
+             "Resource": [
+               "arn:aws:bedrock:us-east-1::foundation-model/qwen.qwen3-vl-235b-a22b"
+             ]
+           },
+           {
+             "Sid": "AdministrationCostPanelOptional",
+             "Effect": "Allow",
+             "Action": [
+               "ce:GetCostAndUsage"
+             ],
+             "Resource": "*"
+           }
+         ]
+       }
+
+   What each part does:
+   - `ClaimTextExtraction` is required, because Textract reads every claim.
+   - `ClaimVisionSecondPass` is needed only if you turn on the vision pass.
+   - `AdministrationCostPanelOptional` lets the Administration screen show your AWS spend. You
+     can delete this block.
+
+   After install, Administration → AWS connection → **Setup instructions** shows the exact
+   policy for your saved region and model. If it ever differs from the one above, use the one
+   on that screen.
+4. **Create the IAM user.** Open **IAM** → **Users** → **Create user**. Name it
+   `cms1500-portal` and leave **Provide user access to the AWS Management Console** unticked.
+   On the permissions step choose **Attach policies directly**, tick `cms1500-portal`, then
+   choose **Next** → **Create user**.
+5. **Create its access key.** Open the new user → **Security credentials** → **Create access
+   key**. For the use case choose **Application running outside AWS**, then **Next** →
+   **Create access key**. Copy the **Access key ID** and the **Secret access key** now. AWS
+   shows the secret only once. Keep the key only in a password manager until you paste it into
+   the installer.
+6. **Vision model access (only if you will use the vision pass).** Open the Bedrock console
+   in your region. If it has a **Model access** page, make sure `Qwen3 VL 235B A22B` shows
+   **Access granted**, and request it if not. Newer accounts have serverless models switched on
+   already. **Test connection** (step 9) confirms access either way.
+7. **Cost Explorer (optional).** The Administration cost panel needs Cost Explorer. It is off
+   in a new account: open **Billing and Cost Management** → **Cost Explorer** once to enable
+   it. The first data appears about a day later.
+8. **Set a budget alarm (recommended).** The portal bills AWS without a human click in two
+   cases: the watched-folder scan, and the vision pass once it is on. Open **Billing and Cost
+   Management** → **Budgets** → **Create budget** and create a monthly cost budget with an
+   email alert, so an unexpected run is noticed within a day.
+9. **Give the key to the portal.** Paste the key ID, secret and region at the installer's AWS
+   prompts. Alternatively, press Enter there and enter them after install under
+   **Administration → AWS connection → Access key**. Either way, choose **Test connection**
+   on that screen after the first sign-in. It makes one real Textract call and one Bedrock
+   call, costing about $0.01, and names any permission that is missing.
+
+**Rotating the key:** create a second access key on the same IAM user and paste it under
+Administration → AWS connection. Run **Test connection**, then deactivate and delete the old
+key in IAM. A user can hold two keys at once, so there is no downtime.
+
+**Running on AWS already?** If the host is an EC2 instance, you can attach the policy to the
+instance's IAM role instead of creating a user and key. Leave the installer's key prompt blank,
+then choose **Host credentials** under Administration → AWS connection.
+
+### Microsoft sign-in (Entra ID)
+
+Skip this part if you will use `local` sign-in, where accounts and passwords are managed in the
+portal. For Microsoft sign-in, someone who can create app registrations in your Microsoft 365
+tenant registers the portal once:
+
+1. **Know the portal's address.** The redirect URI is `https://<hostname>/auth/callback`,
+   where `<hostname>` is the name users will type (the installer asks for it). The path
+   `/auth/callback` is fixed.
+2. **Register the app.** Sign in to the **Microsoft Entra admin center**
+   (`entra.microsoft.com`) → **Identity** → **Applications** → **App registrations** → **New
+   registration**.
+   - **Name:** anything your users will recognise on Microsoft's consent screen, for example
+     `Claims Review Portal`.
+   - **Supported account types:**
+     - **Accounts in this organizational directory only (Single tenant)** is the right choice
+       for almost every clinic: only your own staff can sign in.
+     - **Accounts in any organizational directory (Multitenant)** is only for staff spread
+       across several Microsoft 365 organisations.
+   - **Redirect URI:** set the platform to **Public client/native (mobile & desktop)** — **not
+     Web and not Single-page application**. Then enter `https://<hostname>/auth/callback`.
+     The portal signs in without a client secret, using PKCE. With a **Web** redirect, Microsoft
+     rejects the sign-in with error `AADSTS7000218`.
+   - Choose **Register**.
+3. **Allow public client flows.** In the new registration open **Authentication**, set **Allow
+   public client flows** to **Yes**, and choose **Save**.
+4. **Leave everything else alone.** Do not create a client secret or certificate: the portal
+   never uses one. The default **Microsoft Graph → User.Read** permission is enough. The portal
+   asks only for `openid profile email`. Also skip app roles unless you want them (see
+   *Roles from Entra* below).
+5. **Copy two values** from the registration's **Overview** page:
+   - **Application (client) ID**, a GUID. The installer asks for it.
+   - **Directory (tenant) ID**, a GUID. For a single-tenant registration, this is what you
+     type at the installer's `Directory (tenant) ID` prompt. For a multitenant one, type
+     `organizations` there instead, and list the tenant GUIDs you expect at the next prompt.
+     Another organisation's tenant GUID is public. It is the GUID in the `issuer` value at
+     `https://login.microsoftonline.com/<their-email-domain>/.well-known/openid-configuration`.
+6. **Consent.** The first person from each organisation to sign in sees Microsoft's
+   permission prompt for the app (sign-in and basic profile). If your tenant blocks user
+   consent, an administrator opens the registration → **API permissions** → **Grant admin
+   consent for <your organisation>** once.
+7. **Who gets in.** Signing in with Microsoft does not by itself give access. The installer
+   binds the first administrator to their Microsoft address. Anyone else's first Microsoft
+   sign-in creates an **inactive** account, and an administrator activates it and sets its
+   role under Administration → Users. To restrict sign-in further at Microsoft's end, open
+   **Enterprise applications** → your app → **Properties** and set **Assignment required** to
+   **Yes**. Then assign users or groups under **Users and groups**.
+
+**Adding another address later** (for example moving from `http://localhost:8000` testing to
+`https://<hostname>`): open the registration → **Authentication** and add the new URI under the
+same **Mobile and desktop applications** platform. Old and new URIs both keep working.
+
+**Roles from Entra (optional, single-tenant only).** To manage portal roles in Entra instead of
+on the Administration screen:
+1. In the registration → **App roles**, create roles with the values `Admin`, `Reviewer` and
+   `Billing`.
+2. Assign them to users under **Enterprise applications** → your app → **Users and groups**.
+3. Add `ENTRA_ROLE_SOURCE=claims` to `portal.env` and restart the portal.
+
+Each sign-in then takes its role from Entra, and someone with no role is refused. The portal
+refuses to start in this mode with a multitenant `ENTRA_TENANT_ID`.
 
 ## First install
 
@@ -67,7 +243,8 @@
 
    - `AWS access key id — paste it now, or press Enter to set it up later on the Administration
      screen` — both are fully supported. Pressing Enter leaves the keys blank and you enter
-     them later, signed in, under Administration → AWS connection.
+     them later, signed in, under Administration → AWS connection. How to create the key:
+     **Before you install → AWS**.
    - `AWS_SECRET_ACCESS_KEY` — asked only when you pasted a key id. The secret is not echoed.
    - `AWS_REGION [us-east-1]` — the region of the AWS account covered by your BAA, lower case.
    - `HTTPS — internal = certificate from the portal's own CA (any LAN name; browsers warn until
@@ -106,7 +283,7 @@
      the three to return to this question and choose `local` instead; Ctrl-C cancels the whole
      installer and writes nothing.
      The app registration is **yours, not ours** — the redirect URI is your host, so you create
-     it in your own Azure tenant.
+     it in your own Azure tenant. Step by step: **Before you install → Microsoft sign-in**.
      - `Application (client) ID from the Azure app registration (a GUID)`
      - `Directory (tenant) ID` — one of three:
        - a **tenant GUID**: only that one organisation can sign in. Register the app for
@@ -199,6 +376,88 @@ second, inactive account, and no active administrator is left to activate it:
     docker compose --env-file portal.env exec -T portal python -m dev_tools.portal_user_admin \
       --db /data/runtime/review_portal/review_portal.db set-upn <sign-in-id> <name@your-domain>
 
+## Windows native install
+
+Skip this section for Docker Desktop hosts — use **First install** above. This path installs
+the portal and its HTTPS proxy as two Windows services, natively: no Docker, WSL, Hyper-V, or
+typed command. Check the hash, double-click, follow the wizard, finish on the portal's address.
+
+1. **Check the download.** Beside `CMS1500-Setup-<version>.exe` is a `.sha256` file (we also
+   send `portal-<version>-windows.zip` and its own `.sha256` — see the fallback at the end of
+   this section). In PowerShell, from the folder holding the exe and its `.sha256`:
+
+       Get-FileHash CMS1500-Setup-<version>.exe -Algorithm SHA256
+
+   The hash it prints must match the one in the `.sha256` file. If it does not, download again
+   and do not run it.
+
+2. **Double-click `CMS1500-Setup-<version>.exe`.** It is not code-signed for this pilot, so
+   Windows shows a SmartScreen warning that it is from an unrecognized publisher. Click
+   **More info**, then **Run anyway**. Setup asks Windows for administrator rights next.
+
+3. **Follow the wizard.** It asks the same questions the installer always asked, one page at a
+   time — Welcome, Licence terms, Licence file (browse to the `.lic` file saved from your
+   onboarding email), Folders (install and patient-data folders; both must be new or empty),
+   Sign-in (local accounts or Microsoft/Entra ID; also collects the first administrator), AWS
+   (paste the access key and secret, or tick **Enter the keys later in the portal (Administration
+   → AWS connection)** — a rejected key never blocks the install; Setup says so and leaves the
+   fields blank instead), Network (the hostname other PCs will use, defaulting to this PC's own
+   name, and the allowed CIDRs), Ready (a summary — nothing is written before this page),
+   Install, Finish. If the patient-data drive is not BitLocker-protected, Setup stops here and
+   asks you to confirm it is encrypted some other way before continuing.
+
+4. **Finish page.** Shows the portal's address, then any preflight warnings underneath. With
+   local sign-in it also shows the first administrator's one-time **activation token** — copy it
+   now, it is never shown again. On a fresh install only, an unticked **Trust the portal
+   certificate on this PC** option adds the certificate to the signed-in Windows account's own
+   store (not the machine's) so that account's browser stops warning; tick it if you plan to
+   sign in from this PC.
+
+5. **Existing install.** Point Setup at a PC that already has the portal and it skips straight to
+   an update — no licence, sign-in, AWS or network pages, since it already has that information.
+   An older Setup than the version already installed is refused; use **Roll back to previous
+   version** in the Start menu instead of an older installer.
+
+6. **Uninstall.** Apps & features → CMS-1500 Review Portal → Uninstall stops and removes both
+   Windows services and the firewall rules. **It never removes the patient-data folder** and
+   tells you where it is — back it up first if you mean to keep it. Reinstalling into the same
+   install folder is refused until that folder is deleted.
+
+7. **Start menu.** Open portal, Restart portal, Portal status (prints the logs path — there is no
+   separate Logs folder shortcut, since the logs are readable only by Administrators and
+   SYSTEM), Back up now, Roll back to previous version.
+
+8. **If your site's policy blocks unsigned executables.** We also send
+   `portal-<version>-windows.zip` and its own `.sha256`. Unpack it somewhere only administrators
+   can write, then double-click `Install.cmd` (or `Update.cmd` on a PC that already has the
+   portal) at its root instead of the exe — each asks Windows for administrator rights, then runs
+   the same install through console prompts. Ctrl+V does not paste into those prompts; right-click
+   to paste instead.
+
+`LICENSE.md` (inside the zip, or shown by the wizard) is the licence terms; installing accepts
+them either way. Configuration and operation below — TLS, licensing, troubleshooting — apply to
+both install paths; only the service registration and file layout differ.
+
+**Scripted or repeat installs.** `install.ps1`, `update.ps1`, `rollback.ps1` and `backup.ps1`
+inside the zip are the engine the wizard and the `.cmd` launchers both drive unattended; an
+elevated PowerShell prompt can still call them directly with flags (`-InstallRoot`, `-DataRoot`,
+`-AllowedRanges`, `-ServiceAccount`, `-AnswersFile`, `-CheckOnly`) to provision several hosts
+without answering the wizard's pages each time. Logs land in
+`<InstallRoot>\logs\portal\` and `<InstallRoot>\logs\proxy\`. Schedule `backup.ps1` nightly,
+elevated, with `<InstallRoot>` filled in:
+
+    $action  = New-ScheduledTaskAction -Execute 'powershell.exe' `
+                 -Argument '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "<InstallRoot>\scripts\backup.ps1"'
+    $trigger = New-ScheduledTaskTrigger -Daily -At 1:30am
+    $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+    Register-ScheduledTask -TaskName 'CMS-1500 portal backup' -Action $action -Trigger $trigger -Principal $principal
+
+Run the task as `SYSTEM`, as above, only if the install used `-GrantSystem`; otherwise SYSTEM
+cannot read `<DataRoot>` and the task must run as a member of the local Administrators group
+instead (`-UserId '<domain>\<account>' -LogonType Password`). This backup is local only — copy
+`<DataRoot>\backups\` to your own off-host encrypted storage; nothing here ships a copy off-host.
+**Never delete `<DataRoot>` without a backup** — it holds the licence and the patient database.
+
 ## TLS
 
 Do not try the portal over plain `http://` first. `SESSION_COOKIE_SECURE=1` in `portal.env` means
@@ -279,7 +538,46 @@ Three exit-2 messages are worth knowing in advance, all from the compose-plugin 
 - *"neither DOCKER_CONFIG nor HOME is set"* — the shell has no home directory, so there is
   nowhere Docker looks for a plugin. Re-run with `HOME` set.
 
+### Windows native preflight
+
+Every check below runs inside the setup wizard, and stops it on a blocker with the message and
+fix in plain English on the Ready or Install page. The same checks are also available directly:
+`install.ps1 -CheckOnly` (and the checks `update.ps1` repeats) print one line per check, then on
+any failure a message and the one fix, and exit. Nothing is written until every check passes.
+
+| Exit | Check fails with | Fix |
+|---|---|---|
+| 2 | `bundle-integrity`: `manifest.cms1500.json` is missing, empty, or files do not match it | Delete the folder, check the zip's hash against the separately sent `.sha256`, unpack again. |
+| 2 | `bundle-location`: the unpacked folder is writable by a standard user | Unpack under a folder only Administrators can write. |
+| 2 | `os`: `<Caption> build <n> is not supported` | Use 64-bit Windows Server 2022 (build 20348+) or Windows 11 (build 22000+). |
+| 2 | `admin`: this console is not elevated | `Start-Process powershell -Verb RunAs` |
+| 2 | `ports`: port 80 or 443 is held by HTTP.sys (IIS, WinRM or another Windows web service) | `netsh http show servicestate`, then stop the service it names (e.g. `Stop-Service W3SVC`). |
+| 2 | `ports`: port 80 or 443 is held by another process | `Stop-Process -Id <pid>`, then free the port. |
+| 2 | `egress`: Textract is not reachable over HTTPS | `Test-NetConnection <host> -Port 443`; allow outbound 443 to it. |
+| 2 | `disk`: the install or data folder is a UNC path, not a local fixed disk, not NTFS, or has too little free space | Choose a folder on a local NTFS volume, with enough free space, via `-InstallRoot` / `-DataRoot`. |
+| 2 | `bitlocker`: the data volume is not BitLocker-protected | `Enable-BitLocker -MountPoint <drive> -RecoveryPasswordProtector`, or re-run with `-AcceptUnencryptedDataVolume` if the disk is encrypted below Windows. |
+| 2 | `service-account`: `-ServiceAccount` does not resolve to an account | Create the account first, or omit the flag to use the built-in virtual account. |
+| 2 | `firewall`: Group Policy ignores local firewall rules | Ask your domain administrator for a GPO rule allowing inbound TCP 443 (and 80). |
+| 2 | `firewall`: the inbound rule for TCP 80,443 is missing (`update.ps1` only) | `New-NetFirewallRule -DisplayName 'CMS-1500 Review Portal (HTTPS proxy)' -Direction Inbound -Protocol TCP -LocalPort 80,443 -Action Allow` |
+| 2 | `vcredist`: the VC++ 2015–2022 x64 runtime is missing | `.\runtime\redist\vc_redist.x64.exe /install /quiet /norestart`, then re-run. |
+| 2 | `media-foundation`: `Server-Media-Foundation` is not installed (Server SKUs only) | `Install-WindowsFeature Server-Media-Foundation`, then restart and re-run. |
+| 2 | `data-root-path`: the data folder is a UNC path, a mapped drive, or too long for Windows' 260-character path limit | Choose a shorter, local `-DataRoot`. |
+| 2 | `python-selftest` / `tesseract-selftest`: the bundled interpreter or Tesseract is missing, or its self-test failed | Add the exclusion paths the antivirus check printed to your endpoint protection, unpack the zip again, and re-run. A failed Python self-test naming a `cv2` import means the `vcredist` or `media-foundation` fix above instead. |
+| 2 | No install folder given on a redirected (non-interactive) console | Run the installer interactively, or pass `-InstallRoot` and `-AllowedRanges` as flags. |
+| 1 | The portal did not come up | `<InstallRoot>\logs\portal\cms1500-portal.out.log` and `.err.log` |
+| 1 | (update) `<version> did not come up`; the host is put back on the version it ran before, automatically | `<InstallRoot>\logs\` — the failed version stays on disk for us to look at. |
+| 3 | This host already holds an installed portal | Use `.\update.ps1` instead. |
+
+**Warning, not a failure:** `bedrock-runtime…` is not reachable — the install continues. Allow
+outbound TCP 443 to that host before switching on the vision second pass; the Administration
+screen shows the same notice until it is reachable.
+
 ## Updating
+
+This section, **Rollback** and **Backups** below are the Docker path (`update.ps1` here is the
+Docker Desktop script, unchanged). Windows native: run the new `CMS1500-Setup-<version>.exe` (it
+detects the existing install and updates it), or use the Start menu's **Roll back to previous
+version** / **Back up now** — see **Windows native install** above.
 
 We announce a version. Then, on the host, in this folder:
 

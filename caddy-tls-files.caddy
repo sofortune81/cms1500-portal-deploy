@@ -1,1 +1,1 @@
-tls /certs/fullchain.pem /certs/privkey.pem
+tls {$CADDY_CERT_DIR:/certs}/fullchain.pem {$CADDY_CERT_DIR:/certs}/privkey.pem

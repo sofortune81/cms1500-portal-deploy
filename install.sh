@@ -406,32 +406,20 @@ if [ "$AUTH_MODE" = "entra" ]; then
 fi
 
 # -T: neither subcommand prompts, so no tty is needed and a scripted install does not stall.
-if [ "$AUTH_MODE" = "entra" ]; then
-  # `create` always mints an activation token and prints it as its last two lines. In entra
-  # mode it can never be used -- auth.py refuses passwords for every id but break-glass -- so
-  # showing it puts a live credential on screen that nobody will ever type. Capture stdout and
-  # print everything up to the token block; stderr is left alone, so a real error still
-  # streams, and the whole captured output is shown if the command fails.
-  ADMIN_STATUS=0
-  ADMIN_OUT=$(compose exec -T portal python -m dev_tools.portal_user_admin \
-    --db "$ADMIN_DB" create "$ADMIN_ID" "$ADMIN_NAME" --role admin) || ADMIN_STATUS=$?
-  if [ "$ADMIN_STATUS" -ne 0 ]; then
-    printf '%s\n' "$ADMIN_OUT" >&2
-    echo "creating the administrator failed (exit $ADMIN_STATUS)." >&2
-    admin_retry_hint
-    exit "$ADMIN_STATUS"
-  fi
-  printf '%s\n' "$ADMIN_OUT" | sed '/^activation token for /,$d'
-else
-  ADMIN_STATUS=0
-  compose exec -T portal python -m dev_tools.portal_user_admin \
-    --db "$ADMIN_DB" create "$ADMIN_ID" "$ADMIN_NAME" --role admin \
-    || ADMIN_STATUS=$?
-  if [ "$ADMIN_STATUS" -ne 0 ]; then
-    echo "creating the administrator failed (exit $ADMIN_STATUS)." >&2
-    admin_retry_hint
-    exit "$ADMIN_STATUS"
-  fi
+# --no-activation in entra mode: sign-in is Microsoft and auth.py refuses passwords for every
+# id but break-glass, so the token `create` would otherwise mint is a live credential nobody
+# can ever use. Not minting it replaces the old capture-and-filter of the command's stdout.
+NO_ACTIVATION=
+[ "$AUTH_MODE" = "entra" ] && NO_ACTIVATION=--no-activation
+ADMIN_STATUS=0
+# $NO_ACTIVATION stays unquoted: it is empty or the one fixed flag, never user input.
+compose exec -T portal python -m dev_tools.portal_user_admin \
+  --db "$ADMIN_DB" create "$ADMIN_ID" "$ADMIN_NAME" --role admin $NO_ACTIVATION \
+  || ADMIN_STATUS=$?
+if [ "$ADMIN_STATUS" -ne 0 ]; then
+  echo "creating the administrator failed (exit $ADMIN_STATUS)." >&2
+  admin_retry_hint
+  exit "$ADMIN_STATUS"
 fi
 
 if [ "$AUTH_MODE" = "entra" ]; then
