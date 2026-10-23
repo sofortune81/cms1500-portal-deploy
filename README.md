@@ -516,6 +516,51 @@ docker gateway address, not `127.0.0.1` — so the access log and any 403 troubl
 different from the host than from a client PC. The shipped default ranges already cover
 `172.30.250.1`.
 
+## Network folders
+
+The **watched folder** (where a scanner drops claim PDFs) and the **HIPAA Suite export folder**
+(where approved claims' import files go) are both chosen in Administration with **Browse…**.
+You do not edit the compose file, reinstall or restart to point either at a file server. There
+are three ways to give the portal a folder, and the same three apply on every kind of install:
+
+| Option | Use it when | What you do |
+|---|---|---|
+| **1. A folder on the portal's own machine** | The scanner writes to a disk the portal machine holds | Pick the folder in Browse… (for example `C:\scans` on the Windows installer). Nothing is stored. |
+| **2. A folder the host already mounted** | Your IT team mounts the share on the host and you would rather not store a password in the portal | Pick it from the **mounted folders** shortcuts in Browse…. On Docker the folder must be mounted into the container in `docker-compose.yml` first, and you pick the container-side path. Nothing is stored. |
+| **3. A network share with a sign-in** | The scans live on a file server and you can give the portal an account that can open the share | In Browse… choose **Network…**, type the server name once (`\\fileserver`), then pick the share, or type `\\fileserver\share` straight into the folder box. When the portal asks, enter a username and password for an account that can open the share, then press **Test folder** (watched folder card) or **Test** (export folder card) to check it. The portal then connects to the share itself. |
+
+Option 3 works on Docker (Linux or Windows) and on the Windows installer alike, because the
+portal reaches the file server itself rather than relying on the host. One sign-in covers every
+folder on that share, so the watched and export folders can share it. Use a dedicated account
+with read and write access to just that share.
+
+**What each install can see on its own:**
+
+| Install | Without a sign-in | Notes |
+|---|---|---|
+| Windows installer (service) | Local drives such as `C:\`. Also a `\\server\share` the file server grants to this computer's account, on a domain-joined host: Browse… names the exact account to ask your IT team for | A mapped drive letter like `Z:` belongs to your own login and is invisible to the service. Enter the share's `\\server\share` address instead (`net use` in Command Prompt lists what `Z:` maps to). |
+| Docker Desktop on Windows | Only folders mounted into the container in `docker-compose.yml` | `C:\` paths are not visible inside the container. Use option 2 or 3. |
+| Docker on Linux | Only folders mounted into the container in `docker-compose.yml` | Use option 2 or 3. |
+
+**Requirements and limits**
+
+- The file server must speak **SMB 3** (Windows Server 2012 or later, current Samba and most
+  current NAS) with **encryption** available. The portal signs every connection and encrypts it;
+  a server that cannot is refused with "The server cannot encrypt the connection" instead of
+  being used in the clear. Only for an older NAS that cannot be upgraded, an administrator can
+  turn on the setting **Allow unencrypted network shares**. Claim files then cross the network
+  signed but not encrypted, and both folder cards show a warning for as long as it is on.
+- On the Docker images the sign-in uses NTLM. A domain that has switched NTLM off needs option 1
+  or 2 instead. The Windows installer negotiates Kerberos or NTLM itself.
+- The share cannot be on the portal's own machine; use the local folder path. The portal's own
+  data folder cannot be moved onto a share.
+- Passwords are stored encrypted with the `PORTAL_SECRET_KEY` in `portal.env` and are never shown
+  again. If you change that key, or reset the portal's data, sign in to each share once more
+  (Browse… asks for it).
+- If the portal says it cannot find or reach the server, check the server name and that TCP port
+  445 is open from the portal machine. If **Browse…** cannot list a server's shares, type
+  `\\server\share` yourself.
+
 ## If the install stops
 
 Nothing is written, started or changed unless the installer says so. It ends with one of:

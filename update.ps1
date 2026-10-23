@@ -55,8 +55,12 @@ function Assert-Docker() {
   if ($null -eq (Get-Command docker -ErrorAction SilentlyContinue)) {
     Fail 'docker is not installed, or not on this shell''s PATH. Install Docker Desktop: https://docs.docker.com/desktop/install/windows-install/' 2
   }
-  docker info --format '{{.ServerVersion}}' | Out-Null
-  if ($LASTEXITCODE -ne 0) {
+  # Not `docker info` with a format: when Docker Desktop's engine answers 500, that call prints the
+  # error yet exits 0, so the script walked on to `docker login` and failed there instead.
+  # `docker version` exits non-zero on a server error; the empty-output check covers any CLI
+  # that still exits 0.
+  $serverVersion = docker version --format '{{.Server.Version}}'
+  if ($LASTEXITCODE -ne 0 -or -not $serverVersion) {
     Fail 'the docker daemon is not reachable. Start Docker Desktop, wait for it to report Running, then check: docker info' 2
   }
   docker compose version | Out-Null
