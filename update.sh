@@ -86,6 +86,24 @@ wait_for_health() {
     sleep 2
   done
 }
+
+# [FEATURE: IN-APP UPDATE] The cron line that lets the portal's Updates tab apply a version
+# (install_watcher.sh). Called last, once the portal answers. Never fatal: a host with no cron
+# still runs the portal and still updates by hand, so a refusal is a warning naming the retry.
+# update.sh calls it too, which is how a bundle that predates the watcher gains it.
+# Mutates: the operator's crontab, through install_watcher.sh.
+install_update_watcher() {
+  if [ ! -f install_watcher.sh ]; then
+    echo "warning: install_watcher.sh is not in this folder, so the in-app update watcher was not installed." >&2
+    return 0
+  fi
+  echo "== update watcher"
+  if ! sh ./install_watcher.sh; then
+    echo "warning: the in-app update watcher was not installed; the portal runs, but its Updates tab cannot apply a version." >&2
+    echo "  Fix the cause above, then run:  sh install_watcher.sh" >&2
+  fi
+  return 0
+}
 # <<< shared preflight <<<
 
 require_docker
@@ -100,6 +118,7 @@ fi
 # there fails AFTER the backup has run and leaves the operator mid-update with no way forward.
 NEW_VERSION=""
 TARBALL=""
+ENV_BEFORE_PIN=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --tarball)
@@ -173,6 +192,9 @@ if [ -n "$NEW_VERSION" ]; then
     echo "portal.env has no PORTAL_VERSION= line; cannot pin version $NEW_VERSION." >&2
     exit 2
   fi
+  # A copy of the unpinned file, so a failure before the restart can put it back (unpin below).
+  cp -p portal.env portal.env.pre-update
+  ENV_BEFORE_PIN=portal.env.pre-update
   sed -i.bak "s/^PORTAL_VERSION=.*/PORTAL_VERSION=$NEW_VERSION/" portal.env && rm -f portal.env.bak
 fi
 PORTAL_VERSION=$(sed -n 's/^PORTAL_VERSION=//p' portal.env)
@@ -188,21 +210,38 @@ compose() {
 #: What to tell an operator to type; keep in step with `compose` above.
 COMPOSE_CMD="docker compose --env-file portal.env"
 
+# Backup, load and pull run after the pin and can fail with the old version still running.
+# Left pinned, portal.env would name an image this host may not have: every later
+# `compose up` fails, or on a connected host silently applies the failed version once it is
+# published, and the portal refuses the running version as "not newer". So a failure there
+# puts the unpinned file back before exiting with the step's own code.
+unpin() {
+  if [ -n "$ENV_BEFORE_PIN" ]; then
+    mv -f "$ENV_BEFORE_PIN" portal.env
+    echo "portal.env restored: PORTAL_VERSION=$INSTALLED_VERSION, the version still running." >&2
+  fi
+}
+
 mkdir -p data/backups
 echo "== backup"
 compose exec -T portal python -m dev_tools.db_backup \
-  --db /data/runtime/review_portal/review_portal.db --out /data/backups --keep 14
+  --db /data/runtime/review_portal/review_portal.db --out /data/backups --keep 14 \
+  || { rc=$?; unpin; exit $rc; }
 
 if [ -n "$TARBALL" ]; then
   echo "== load $TARBALL"
-  docker load -i "$TARBALL"
+  docker load -i "$TARBALL" || { rc=$?; unpin; exit $rc; }
 else
   echo "== pull ${PORTAL_IMAGE}:${PORTAL_VERSION}"
-  compose pull
+  compose pull || { rc=$?; unpin; exit $rc; }
 fi
+# The new image is on this host from here on, so the pin stays even if the restart fails.
+[ -z "$ENV_BEFORE_PIN" ] || rm -f "$ENV_BEFORE_PIN"
 echo "== restart"
 compose up -d
 
 echo "== health"
 wait_for_health || exit 1
 echo "portal ${PORTAL_VERSION} is up"
+
+install_update_watcher

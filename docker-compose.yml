@@ -10,6 +10,7 @@ services:
       - LICENSE_PATH=/data/portal.lic
       - PROCESSED_CLAIMS_DIR=/data/processed_claims
       - PENDING_CLAIMS_DIR=/data/pending_claims
+      - UPDATE_DIR=/data/update
     ports:
       - "127.0.0.1:8000:8000"
     volumes:

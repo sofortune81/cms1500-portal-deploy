@@ -5,7 +5,7 @@
 - A container image, `ghcr.io/sofortune81/cms1500-portal:<version>` (or a `.tar` file for hosts without registry access).
 - A licence issued to your organisation, sent as text in your onboarding email. It carries an expiry date, a maintenance date, and a seat count.
 - Registry credentials (a username and a token) in a separate email, unless you were sent a `.tar` file.
-- This folder: `README.md`, `LICENSE.md`, `docker-compose.yml`, `portal.env.template`, `install.sh`, `install.ps1`, `update.sh`, `update.ps1`, `Caddyfile`, `caddy-tls-internal.caddy`, `caddy-tls-public.caddy`, `caddy-tls-files.caddy`.
+- This folder: `README.md`, `LICENSE.md`, `docker-compose.yml`, `portal.env.template`, `install.sh`, `install.ps1`, `update.sh`, `update.ps1`, `update_watcher.sh`, `update_watcher.ps1`, `install_watcher.sh`, `install_watcher.ps1`, `Caddyfile`, `caddy-tls-internal.caddy`, `caddy-tls-public.caddy`, `caddy-tls-files.caddy`.
 
 ## Requirements
 
@@ -32,6 +32,9 @@
   as printed by the preflight.
 - The `data/` folder on an encrypted volume. It will hold patient data.
 - Outbound HTTPS to AWS (Textract, Bedrock) and, unless your policy forbids it, to the licence server.
+  A native Windows install that applies updates from the portal also downloads the release zip
+  from Amazon S3 over HTTPS (`*.s3.amazonaws.com`), through a link the licence server
+  issues.
 - Ports 80 and 443 free on the host — the installer-managed HTTPS proxy publishes them, so
   nothing else on the host may hold them. Port 8000 is never exposed. For a `public`
   certificate you also need a public DNS name pointing at the host.
@@ -418,8 +421,8 @@ typed command. Check the hash, double-click, follow the wizard, finish on the po
    An older Setup than the version already installed is refused; use **Roll back to previous
    version** in the Start menu instead of an older installer.
 
-6. **Uninstall.** Apps & features → CMS-1500 Review Portal → Uninstall stops and removes both
-   Windows services and the firewall rules. **It never removes the patient-data folder** and
+6. **Uninstall.** Apps & features → CMS-1500 Review Portal → Uninstall removes the update
+   watcher and nightly backup scheduled tasks, both Windows services and the firewall rules. **It never removes the patient-data folder** and
    tells you where it is — back it up first if you mean to keep it. Reinstalling into the same
    install folder is refused until that folder is deleted.
 
@@ -433,6 +436,8 @@ typed command. Check the hash, double-click, follow the wizard, finish on the po
    portal) at its root instead of the exe — each asks Windows for administrator rights, then runs
    the same install through console prompts. Ctrl+V does not paste into those prompts; right-click
    to paste instead.
+   A zip install uninstalls with `Uninstall.cmd` from the same folder, not from Apps & features;
+   `README.md` in the zip lists what it removes and keeps.
 
 `LICENSE.md` (inside the zip, or shown by the wizard) is the licence terms; installing accepts
 them either way. Configuration and operation below — TLS, licensing, troubleshooting — apply to
@@ -451,6 +456,8 @@ elevated, with `<InstallRoot>` filled in:
     $trigger = New-ScheduledTaskTrigger -Daily -At 1:30am
     $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
     Register-ScheduledTask -TaskName 'CMS-1500 portal backup' -Action $action -Trigger $trigger -Principal $principal
+
+Keep that task name: uninstalling the portal removes the task by it.
 
 Run the task as `SYSTEM`, as above, only if the install used `-GrantSystem`; otherwise SYSTEM
 cannot read `<DataRoot>` and the task must run as a member of the local Administrators group
@@ -619,12 +626,93 @@ screen shows the same notice until it is reachable.
 
 ## Updating
 
-This section, **Rollback** and **Backups** below are the Docker path (`update.ps1` here is the
-Docker Desktop script, unchanged). Windows native: run the new `CMS1500-Setup-<version>.exe` (it
-detects the existing install and updates it), or use the Start menu's **Roll back to previous
-version** / **Back up now** — see **Windows native install** above.
+Once we announce a version, it appears on the Administration screen's **Updates** tab, on Docker
+and Windows native installs alike. Administrators also see a banner, a badge on the tab and a
+notice in the bell. The tab shows the release notes; an administrator clicks
+**Update to <version> now**, or **Schedule for…** a time of their choosing. The portal backs up
+its database first, warns everyone signed in shortly before it restarts, and is back within a few
+minutes. Going back to an older version is not offered there: see **Rollback** below (Docker) or
+the Start menu's **Roll back to previous version** (Windows native).
 
-We announce a version. Then, on the host, in this folder:
+Two settings on the same tab:
+
+- **Notify recipients** — email addresses, comma-separated (up to 10), that are emailed when a
+  new version is announced and when an update succeeds, fails or is skipped. Blank sends no mail;
+  every administrator still gets the bell notice.
+- **Auto-update** — off by default. When on, each newly announced version is applied unattended
+  at **Auto-update time** (24-hour, the portal server's own clock; default 02:00). The portal
+  restarts, so anyone signed in at that time is interrupted.
+
+**Windows native downloads.** A native install downloads the new version's zip itself, from
+Amazon S3 (`*.s3.amazonaws.com` — see **Requirements**), and checks its fingerprint
+before installing. Each download is available for 14 days after we publish a version, and the
+Updates tab shows the days remaining; a reminder goes out three days before it ends. After that,
+ask us for a fresh copy and update by hand (below). Docker installs pull the image and do not
+expire.
+
+### The update watcher
+
+The portal cannot restart itself, so a small watcher on the host picks up the request every
+minute and runs the update, including the backup:
+
+- **Linux (Docker):** one line in your own crontab, running `update_watcher.sh` as you — never
+  root.
+- **Windows (Docker Desktop):** one scheduled task, `CMS1500 Portal Update Watcher`, running
+  `update_watcher.ps1` as you while you are signed in (Docker Desktop runs only then too).
+- **Windows native:** one scheduled task, `CMS-1500 portal update watcher`, running
+  `<InstallRoot>\scripts\update_watcher.ps1` as `SYSTEM`, because an update stops and starts
+  services.
+
+Every install sets it up as its last step, and every update that comes up healthy puts it back.
+A host whose `cron` or Task Scheduler refuses still installs and updates normally: the script
+prints a warning and the command to retry. The Updates tab says when the watcher is not running
+and prints the command that starts it.
+
+**Setting it up once, where the Updates tab says it is missing.**
+
+*Docker, installed before the Updates tab existed.* This folder has no watcher scripts yet, and
+its `update.sh` / `update.ps1` predate the watcher, so updating with them does not add it. After
+updating to a version that has the Updates tab, copy the scripts out of the running portal image
+once, then install the watcher. Linux:
+
+    docker compose --env-file portal.env cp portal:/opt/bundle/. ./ && sh install_watcher.sh
+
+Windows (PowerShell), two commands:
+
+    docker compose --env-file portal.env cp portal:/opt/bundle/. ./
+    .\install_watcher.ps1
+
+This also refreshes `update.sh` and `update.ps1`, so every later update keeps the watcher.
+
+*Docker, any other host.* From this folder: `sh install_watcher.sh` (Linux) or
+`.\install_watcher.ps1` (Windows).
+
+*Windows native.* The setup exe and `Update.cmd` register it with every update, so a PC installed
+before the Updates tab existed gains it with its next update. If it is still missing, fix the
+cause the warning named, then run this from an elevated PowerShell (re-running `Update.cmd` does
+not help: it refuses the version already installed):
+
+    & '<InstallRoot>\scripts\register_update_watcher.ps1'
+
+**Removing it lasts only until the next update:** it turns in-app updates off, but every update
+that comes up healthy installs it again, on every install path, so run the removal again after
+each one.
+
+    sh install_watcher.sh --remove        # Linux (Docker)
+    .\install_watcher.ps1 -Remove         # Windows (Docker Desktop)
+
+Windows native, from an elevated PowerShell:
+
+    Unregister-ScheduledTask -TaskName 'CMS-1500 portal update watcher' -Confirm:$false
+
+Uninstalling a Windows native install removes it too.
+
+### Updating by hand
+
+The fallback for a host whose watcher cannot run, a Windows download that has expired, or a host
+that cannot reach our licence server and so never sees an announcement.
+
+**Docker.** On the host, in this folder:
 
     sh update.sh <version>          # Linux
     .\update.ps1 -Version <version> # Windows
@@ -643,7 +731,15 @@ The version comes first:
     .\update.ps1 -Version <version> -Tarball portal-<version>.tar  # Windows
 
 The script then loads that file instead of pulling, and nothing contacts the registry. It checks
-the file is there before it backs anything up, so a mistyped name costs you nothing.
+the file is there before it backs anything up, so a mistyped name costs you nothing. With the
+watcher installed, you can instead type the version on the Updates tab, with
+`portal-<version>.tar` in this folder.
+
+**Windows native.** Run the new `CMS1500-Setup-<version>.exe`: it detects the existing install
+and updates it (see **Windows native install**, step 5). A site that blocks unsigned executables
+double-clicks `Update.cmd` in the unpacked zip instead. Use the Start menu's
+**Roll back to previous version** and **Back up now**; **Rollback** and **Backups** below are the
+Docker path.
 
 ## Rollback
 

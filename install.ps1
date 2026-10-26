@@ -62,6 +62,32 @@ function Assert-Docker() {
     Fail 'the docker compose plugin is missing. Update Docker Desktop -- every supported version ships it.' 2
   }
 }
+
+# [FEATURE: IN-APP UPDATE] The scheduled task that lets the portal's Updates tab apply a version
+# (install_watcher.ps1). Called last, once the portal answers. Never fatal: a host whose Task
+# Scheduler refuses still runs the portal and still updates by hand, so a refusal is a warning
+# naming the retry. update.ps1 calls it too, which is how a bundle that predates the watcher
+# gains it. The installer's own refusals are `exit`, which ends only that script.
+# Mutates: the Task Scheduler entry install_watcher.ps1 names.
+function Install-UpdateWatcher() {
+  $installer = Join-Path $PSScriptRoot 'install_watcher.ps1'
+  if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) {
+    [Console]::Error.WriteLine('warning: install_watcher.ps1 is not in this folder, so the in-app update watcher was not installed.')
+    return
+  }
+  Write-Host '== update watcher'
+  $installed = $false
+  try {
+    & $installer
+    $installed = ($LASTEXITCODE -eq 0)
+  } catch {
+    [Console]::Error.WriteLine("install_watcher.ps1 stopped: $($_.Exception.Message)")
+  }
+  if (-not $installed) {
+    [Console]::Error.WriteLine('warning: the in-app update watcher was not installed; the portal runs, but its Updates tab cannot apply a version.')
+    [Console]::Error.WriteLine('  Fix the cause above, then run:  .\install_watcher.ps1')
+  }
+}
 # <<< shared preflight <<<
 
 Assert-Docker
@@ -109,7 +135,8 @@ if ($Version -eq '') {
 # The same charset check whether the version was typed, passed, or read off a file name.
 # \z, not $: .NET's $ also matches just before a trailing newline, which would let a
 # pasted "1.4.0`n" through here while the POSIX case pattern in install.sh rejects it.
-if ($Version -notmatch '^[0-9A-Za-z._-]+\z') { Fail "bad version: $Version" 2 }
+# -cnotmatch: a case-insensitive match folds the Kelvin sign and dotted I into [A-Za-z].
+if ($Version -cnotmatch '^[0-9A-Za-z._-]+\z') { Fail "bad version: $Version" 2 }
 
 # Compose substitutes ${PORTAL_IMAGE}:${PORTAL_VERSION} in docker-compose.yml from the process
 # environment, a file literally named `.env`, or --env-file, and from nothing else. The
@@ -320,6 +347,9 @@ if ($authMode -eq 'entra') {
   Write-Host 'The activation token printed above is single-use and expires in 48 hours. Give it to'
   Write-Host "$adminId out of band; they enter it with a new password at the portal's sign-in screen."
 }
+
+Write-Host ''
+Install-UpdateWatcher
 
 if ($profiles -eq 'tls') {
   Write-Host "Portal $Version is running at https://$hostnameSet."

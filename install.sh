@@ -93,6 +93,24 @@ wait_for_health() {
     sleep 2
   done
 }
+
+# [FEATURE: IN-APP UPDATE] The cron line that lets the portal's Updates tab apply a version
+# (install_watcher.sh). Called last, once the portal answers. Never fatal: a host with no cron
+# still runs the portal and still updates by hand, so a refusal is a warning naming the retry.
+# update.sh calls it too, which is how a bundle that predates the watcher gains it.
+# Mutates: the operator's crontab, through install_watcher.sh.
+install_update_watcher() {
+  if [ ! -f install_watcher.sh ]; then
+    echo "warning: install_watcher.sh is not in this folder, so the in-app update watcher was not installed." >&2
+    return 0
+  fi
+  echo "== update watcher"
+  if ! sh ./install_watcher.sh; then
+    echo "warning: the in-app update watcher was not installed; the portal runs, but its Updates tab cannot apply a version." >&2
+    echo "  Fix the cause above, then run:  sh install_watcher.sh" >&2
+  fi
+  return 0
+}
 # <<< shared preflight <<<
 
 require_docker
@@ -441,6 +459,9 @@ else
   echo "The activation token printed above is single-use and expires in 48 hours. Give it to"
   echo "$ADMIN_ID out of band; they enter it with a new password at the portal's sign-in screen."
 fi
+
+echo ""
+install_update_watcher
 
 if [ "$PROFILES" = "tls" ]; then
   echo "Portal ${VERSION} is running at https://$HOSTNAME_SET."
